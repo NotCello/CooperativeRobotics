@@ -1,50 +1,52 @@
-classdef TaskAltitude< Task   
+classdef TaskAltitude < Task   
     properties
-        max_depth = -39.0;
-        kp = 0.2;
-        transition_range = 0.5;
+        % Defines the safety limit relative to the seafloor
+        min_altitude = 2.0;      % Minimum safe altitude (meters)
+        kp = 2.0;                % Gain to push away from floor
+        transition_range = 0.5;  % Activation buffer (starts acting at 1.5m)
     end
     
     methods
         function updateReference(obj, robot)
-                     % Usa eta(3) per la posizione Z
-             actual_z = robot.eta(3); %
-                         % Calcola l'errore
-             error_z = obj.max_depth - actual_z;
-                         % --- QUESTA È LA LOGICA CORRETTA ---
-             % Se l'errore è positivo, sei in pericolo (sotto -39.0)
-             % e devi chiedere una velocità positiva (in su).
-             if error_z < 0
-                 obj.xdotbar = obj.kp * error_z;             
-             end
+            % 1. Measure distance to seafloor
+            current_altitude = robot.altitude;
+            
+            % 2. Calculate error (positive if we are too close)
+            % We want altitude >= min_altitude
+            dist_error = obj.min_altitude - current_altitude;
+             
+            % 3. Set reference velocity
+            % If we are too close (dist_error > 0), command positive velocity (UP)
+            if dist_error > 0
+                 obj.xdotbar = obj.kp * dist_error;             
+            else
+                 % If we are safe, request 0 (or let lower priority tasks decide)
+                 obj.xdotbar = 0; 
+            end
         end
         
-        
         function updateJacobian(obj, robot)
-            % Il tuo Jacobiano è CORRETTO
+            % Control the vehicle linear z-velocity (w)
+            % The Jacobian selects the 10th element of the state vector (v_nu(3))
             obj.J = zeros(1, 13);
             obj.J(1, 10) = 1; 
         end
         
         function updateActivation(obj, robot)
-            % Prende la posizione z attuale
-            current_z = robot.eta(3); %
+            % 1. Get current altitude
+            current_altitude = robot.altitude;
             
-            % Definiamo i limiti
-            % xmin: Sotto -39.0, A = 1 (acceso)
-            % xmax: Sopra -38.5, A = 0 (spento)
-            xmin = obj.max_depth; % es: -39.0
-            xmax = obj.max_depth + obj.transition_range; % es: -38.5
+            % 2. Define activation bounds
+            % We want the task to be:
+            % - Fully Active (1) if altitude <= 1.0m (Danger)
+            % - Inactive (0) if altitude >= 1.5m (Safe)
             
-            ymin = 0; % Attivazione minima
-            ymax = 1; % Attivazione massima
+            xmin = obj.min_altitude;                        % 1.0
+            xmax = obj.min_altitude + obj.transition_range; % 1.5
             
-            % --- ERRORE CORRETTO ---
-            % Usa la funzione DECRESCENTE per la logica di sicurezza
-            % A=1 (acceso) quando z è PICCOLO (pericoloso)
-            % A=0 (spento) quando z è GRANDE (sicuro)
-            obj.A = DecreasingBellShapedFunction(xmin, xmax, ymin, ymax, current_z);
-            %
+            % 3. Compute activation
+            % Use Decreasing function because lower altitude = higher danger
+            obj.A = DecreasingBellShapedFunction(xmin, xmax, 0, 1, current_altitude);
         end
     end
 end

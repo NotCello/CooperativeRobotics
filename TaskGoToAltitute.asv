@@ -1,0 +1,56 @@
+classdef TaskAltitude< Task   
+    properties
+        max_depth = -38.0;
+        kp = 0.2;
+        transition_range = 0.5;
+    end
+    
+    methods
+        function updateReference(obj, robot)
+                     % Usa eta(3) per la posizione Z
+             actual_z = robot.eta(3); %
+                         % Calcola l'errore
+             error_z = obj.max_depth - actual_z;
+                         % --- QUESTA È LA LOGICA CORRETTA ---
+             % Se l'errore è positivo, sei in pericolo (sotto -39.0)
+             % e devi chiedere una velocità positiva (in su).
+             if error_z > 0
+                 obj.xdotbar = obj.kp * error_z;             
+             
+             else
+         % If error is negative (you are safe), command ZERO speed.
+         obj.xdotbar = 0; 
+            end
+        end
+    
+
+        
+        
+        function updateJacobian(obj, robot)
+            % Il tuo Jacobiano è CORRETTO
+            obj.J = zeros(1, 13);
+            obj.J(1, 10) = 1; 
+        end
+        
+        function updateActivation(obj, robot)
+            % Prende la posizione z attuale
+            current_z = robot.eta(3); %
+            
+            % Definiamo i limiti
+            % xmin: Sotto -39.0, A = 1 (acceso)
+            % xmax: Sopra -38.5, A = 0 (spento)
+            xmin = obj.max_depth; % es: -39.0
+            xmax = obj.max_depth + obj.transition_range; % es: -38.5
+            
+            ymin = 0; % Attivazione minima
+            ymax = 1; % Attivazione massima
+            
+            % --- ERRORE CORRETTO ---
+            % Usa la funzione DECRESCENTE per la logica di sicurezza
+            % A=1 (acceso) quando z è PICCOLO (pericoloso)
+            % A=0 (spento) quando z è GRANDE (sicuro)
+            obj.A = DecreasingBellShapedFunction(xmin, xmax, ymin, ymax, current_z);
+            %
+        end
+    end
+end

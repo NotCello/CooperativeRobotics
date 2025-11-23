@@ -9,57 +9,84 @@ clc; clear; close all;
 dt       = 0.005;
 endTime  = 50;
 % Initialize robot model and simulator
-robotModel = UvmsModel();          
+robotModel = UvmsModel();         
 sim = UvmsSim(dt, robotModel, endTime);
 % Initialize Unity interface
 unity = UnityInterface("127.0.0.1");
 
-% Define tasks
-%task_vehicle = TaskVehicle();       
-task_tool    = TaskTool();
-task_hori    =TaskHorizontalProf();
-task_vehicle = TaskVehicle();
-task_alti    = TaskAltitude();
-task_set = {task_alti,task_hori,task_vehicle,task_tool};
+% --- 1. Create ALL tasks (your "Lego bricks") ---
+task_safety_wall = TaskAltitude(); % Safety task
+task_keep_level  = TaskHorizontal();      % Attitude task
+task_nav_6dof    = TaskVehiclePose();     % New 6-DOF task
+task_land_z      = TaskGoToAltitude(); % New landing task
+task_nav_3dof    = TaskVehiclePosition();         % Existing 3-DOF task
+task_tool       = TaskTool();
 
-% Define actions and add to ActionManager
-actionManager = ActionManager();
-actionManager.addAction(task_set);  % action 1
+% --- 2. Create the "Master List" ---
+all_tasks = {task_safety_wall, task_keep_level, task_nav_6dof, task_land_z, task_nav_3dof};
 
-% Define desired positions and orientations (world frame)
-w_arm_goal_position = [12.2025, 37.3748, -39.8860]';
-w_arm_goal_orientation = [0, pi, pi/2];
-w_vehicle_goal_position = [10.5 37.5 -39.9]';
-w_vehicle_goal_orientation = [0, 0, 0];
+% --- 3. Configure ActionManager ---
+actionManager = ActionManager(); %
+actionManager.setUnifiedTaskList(all_tasks);
 
-% Set goals in the robot model
-robotModel.setGoal(w_arm_goal_position, w_arm_goal_orientation, w_vehicle_goal_position, w_vehicle_goal_orientation);
+% --- 4. Define your two Actions ---
+actionManager.addAction("safe_navigation", ...
+    {task_safety_wall,task_keep_level ,task_nav_6dof});
+
+actionManager.addAction("landing", ...
+    {task_keep_level, task_land_z, task_nav_3dof});
+
+% --- 5. Set Initial Position and Goal ---
+% As per prompt: start close to seafloor
+robotModel.eta    = [48.5 11.5 -33 0 0 0]'; 
+robotModel.updateTransformations();
+
+% Set goal for "safe navigation"
+goal_nav = [50 -12.5 -33]';
+% --- Line 45 (NEW) ---
+robotModel.setGoal([0;0;0], [0;0;0], goal_nav, [0,0,0]);
+
+% --- 6. Set Initial Action ---
+actionManager.setCurrentAction("safe_navigation", 0.0);
 
 % Initialize the logger
-logger = SimulationLogger(ceil(endTime/dt)+1, robotModel, task_set);
+logger = SimulationLogger(ceil(endTime/dt)+1, robotModel, all_tasks); % Use the MASTER list
 
-% Main simulation loop
+% --- 7. MAIN LOOP ---
 for step = 1:sim.maxSteps
-    % 1. Receive altitude from Unity
+    % 1. Receive altitude
     robotModel.altitude = unity.receiveAltitude(robotModel);
+    
 
-    % 2. Compute control commands for current action
-    [v_nu, q_dot] = actionManager.computeICAT(robotModel);
 
-    % 3. Step the simulator (integrate velocities)
+    % --- 8. TRIGGER THE TRANSITION ---
+    if (norm(robotModel.eta(1:3) - goal_nav(1:3)) < 1.0 && ... % If we are < 1m from nav goal
+        ~strcmp(actionManager.currentActionName, "landing")) % And not already landing
+
+        fprintf('--- ACTION SWITCH: INITIATING LANDING --- \n');
+        
+        % Set the new goal (land at current X,Y)
+        land_pos = [robotModel.eta(1); robotModel.eta(2); -34]; % Land at -34
+        % --- Line 45 (NEW) ---
+        % --- Line 68 (NEW) ---
+        robotModel.setGoal([0;0;0], [0;0;0], land_pos, [0,0,0]);
+        
+        % Call the new action
+        actionManager.setCurrentAction("landing", sim.time);
+    end
+
+    % 2. Compute control (pass sim.time)
+    [v_nu, q_dot] = actionManager.computeICAT(robotModel, sim.time);
+
+    % 3. Step, 4. Send, 5. Log
     sim.step(v_nu, q_dot);
-
-    % 4. Send updated state to Unity
     unity.send(robotModel);
-
-    % 5. Logging
     logger.update(sim.time, sim.loopCounter);
 
     % 6. Optional debug prints
     if mod(sim.loopCounter, round(1 / sim.dt)) == 0
         fprintf('t = %.2f s\n', sim.time);
-        fprintf('alt = %.2f m\n', robotModel.altitude);
-        fprintf('position  = %.2f \n',robotModel.eta)
+        fprintf('position  = %.2f \n',robotModel.eta) % Print pose
     end
 
     % 7. Optional real-time slowdown

@@ -1,57 +1,54 @@
 classdef TaskHorizontal < Task   
     properties
-        theta_star=0.1;
-        kp=0.2;
-        theta
+        theta_star = 0.1; % Goal angle (from notes)
+        kp = 0.5;         % Gain (lambda from notes)
+        
+        % Properties to store calculated values
+        theta = 0;        % Current error angle
+        rho = [0;0;0];    % Misalignment vector (n*theta)
     end
+    
     methods
+        
+        % --- 1. UPDATE REFERENCE (Calculates theta, rho, xdotbar) ---
         function updateReference(obj, robot)
-            k_w=[0 0 1]';
-            k_v=robot.vTw(1:3,3);
-            rho=skew(k_v)*k_w;
-            a=norm(rho);
-            % theta=ata
-            kw = [0; 0; 1]; % Vettore Z verticale (asse del mondo)
-            % L'asse Z del veicolo proiettato sul mondo.
-            % Lo troviamo nella matrice di rotazione wTv.
-            % (wTv è in robotModel)
-            kv = robot.wTv(1:3, 3); 
+            % Define the two vectors to compare
+            k_w = [0; 0; 1];                    % World Z-axis (vertical)
+            k_v = robot.wTv(1:3, 3);           % Vehicle Z-axis (in world frame)
             
-            % 2. Calcola le due componenti
-            x_component = dot(kw, kv);
-            % y_component = norm(cross(kv, kw));
+            % --- Calculate Angle (theta) ---
+            cos_theta = dot(k_w, k_v);
+            sin_theta = norm(cross(k_w, k_v));
+            obj.theta = atan2(sin_theta, cos_theta); % Always positive (0 to pi)
             
-            % 3. Calcola l'angolo in radianti
-            obj.theta = atan2(a, x_component);
-            n=rho/obj.theta;
+            % --- Calculate Misalignment Vector (rho) ---
+            % Use the provided tool for this
+            obj.rho = ReducedVersorLemma(k_v, k_w); %
             
-            
-            obj.xdotbar = -0.2 * (obj.theta);
-            % % limit the requested velocities...
-            % obj.xdotbar(1:3) = Saturate(obj.xdotbar(1:3), 0.2);
-            % obj.xdotbar(4:6) = Saturate(obj.xdotbar(4:6), 0.2);
-            
-            
-            
-            
-        end
-        function updateJacobian(obj, robot)
-            % bJe = RobustJacobian(robot.q);
-            % Ste = [eye(3) zeros(3);  -skew(robot.vTe(1:3,1:3)*robot.eTt(1:3,4)) eye(3)];
-            % Jt_a  = Ste * [robot.vTb(1:3,1:3) zeros(3,3); zeros(3,3) robot.vTb(1:3,1:3)] * bJe;
-            % Jt_v = [zeros(3) eye(3); eye(3) -skew(robot.vTt(1:3,4))];
-            % obj.J = [Jt_a Jt_v];
-            k_w=[0 0 1]';
-            k_v=robot.vTw(1:3,3);
-            rho=skew(k_v)*k_w;
-            a=norm(rho);
-            n=rho/a;
-            obj.J=n'*[zeros(3,7),zeros(3,3),eye(3)];
+            % --- Calculate Reference Rate (xdotbar) ---
+            % Use the professor's formula
+            obj.xdotbar = obj.kp * (obj.theta_star - obj.theta);
         end
         
-        function updateActivation(obj, robot)
+        % --- 2. UPDATE JACOBIAN (Uses rho and theta) ---
+        function updateJacobian(obj, robot)
+            % Get the axis 'n' from 'rho' (which was calculated in updateReference)
+            if obj.theta > 1e-6 % Avoid division by zero
+                n = obj.rho / obj.theta;
+            else
+                n = [0; 0; 0]; % If aligned, axis is undefined (and J=0)
+            end
             
-            obj.A = IncreasingBellShapedFunction(0.1,0.2,0,1,obj.theta);
+            % J = n' * [selector for angular velocity]
+            % (Matches professor's notes)
+            obj.J = n' * [zeros(3,7), zeros(3,3), eye(3)];
+        end
+        
+        % --- 3. UPDATE ACTIVATION (Uses theta) ---
+        function updateActivation(obj, robot)
+            % Use the "smooth" inequality function
+            obj.A = IncreasingBellShapedFunction(0.1, 0.2, 0, 1, obj.theta);
+            %
         end
     end
 end
